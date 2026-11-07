@@ -7,19 +7,17 @@
  *   GEMINI_API_KEY  - Google AI Studio で発行したAPIキー
  */
 
+import { guard, bodySize } from './_guard.js';
+
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 
-const CORS = {
-    'Access-Control-Allow-Origin': '*',
-    'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type',
-    'Content-Type': 'application/json',
-};
+// モデル名はURLに埋め込むため、形を厳しく確かめる（別のAPIへ飛ばされないように）
+const MODEL_RE = /^gemini-[0-9a-z.-]{1,60}$/;
+const MAX_BODY_BYTES = 4 * 1024 * 1024; // 本文は4MBまで（PDF・画像の添付を考慮）
 
 export default async function handler(req, res) {
-    Object.entries(CORS).forEach(([k, v]) => res.setHeader(k, v));
-
-    if (req.method === 'OPTIONS') return res.status(200).end();
+    // 許可したオリジン・回数制限（所見A）。CORS は guard が付ける
+    if (!guard(req, res, { name: 'gemini', limit: 20 })) return;
 
     if (!GEMINI_API_KEY) {
         return res.status(500).json({ error: 'GEMINI_API_KEY が設定されていません' });
@@ -55,9 +53,18 @@ export default async function handler(req, res) {
 
     // ── POST: Gemini API にリクエストを転送 ──────────────────
     if (req.method === 'POST') {
+        if (bodySize(req.body) > MAX_BODY_BYTES) {
+            return res.status(413).json({ error: 'リクエストが大きすぎます' });
+        }
         const { model, contents, systemInstruction } = req.body || {};
         if (!model || !contents) {
             return res.status(400).json({ error: 'model と contents は必須です' });
+        }
+        if (typeof model !== 'string' || !MODEL_RE.test(model)) {
+            return res.status(400).json({ error: 'model の指定が正しくありません' });
+        }
+        if (!Array.isArray(contents)) {
+            return res.status(400).json({ error: 'contents は配列で指定してください' });
         }
 
         try {
@@ -76,7 +83,7 @@ export default async function handler(req, res) {
             if (data.error) return res.status(400).json({ error: data.error.message });
             return res.status(200).json(data);
         } catch (err) {
-            return res.status(500).json({ error: err.message });
+            return res.status(500).json({ error: 'Gemini への中継に失敗しました' });
         }
     }
 

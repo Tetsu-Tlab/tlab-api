@@ -9,21 +9,13 @@ const EC_ID        = process.env.EDGE_CONFIG_ID;
 const TEAM_ID      = process.env.TEAM_ID;
 const DATA_KEY     = 'sharedData';
 
-// CORS ヘッダー（全アプリからアクセス可能）
-const CORS = {
-    'Access-Control-Allow-Origin':  '*',
-    'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type',
-    'Content-Type': 'application/json',
-};
+import { guard, bodySize } from './_guard.js';
+
+const MAX_BODY_BYTES = 64 * 1024; // 共有データの更新は64KBまで
 
 export default async function handler(req, res) {
-    // Preflight
-    if (req.method === 'OPTIONS') {
-        return res.status(200).set(CORS).end();
-    }
-
-    Object.entries(CORS).forEach(([k, v]) => res.setHeader(k, v));
+    // 許可したオリジン・回数制限（所見A）。CORS は guard が付ける
+    if (!guard(req, res, { name: 'sync', limit: 30 })) return;
 
     // ── GET: 共有データを取得 ────────────────────────────────
     if (req.method === 'GET') {
@@ -39,15 +31,21 @@ export default async function handler(req, res) {
             const data = raw?.value ?? raw ?? {};
             return res.status(200).json(data);
         } catch (e) {
-            return res.status(500).json({ error: e.message });
+            return res.status(500).json({ error: '共有データの処理に失敗しました' });
         }
     }
 
     // ── POST: 共有データを更新 ───────────────────────────────
     if (req.method === 'POST') {
         try {
+            if (bodySize(req.body) > MAX_BODY_BYTES) {
+                return res.status(413).json({ error: 'データが大きすぎます' });
+            }
             const incoming = typeof req.body === 'string'
                 ? JSON.parse(req.body) : req.body;
+            if (!incoming || typeof incoming !== 'object' || Array.isArray(incoming)) {
+                return res.status(400).json({ error: 'オブジェクトで送ってください' });
+            }
 
             // 現在値を取得してマージ
             const getUrl = `https://api.vercel.com/v1/edge-config/${EC_ID}/item/${DATA_KEY}?teamId=${TEAM_ID}`;
@@ -77,7 +75,7 @@ export default async function handler(req, res) {
 
             return res.status(200).json({ ok: true, data: merged });
         } catch (e) {
-            return res.status(500).json({ error: e.message });
+            return res.status(500).json({ error: '共有データの処理に失敗しました' });
         }
     }
 
